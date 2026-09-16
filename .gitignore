@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+.pytest_cache/
+.matplotlib/
+.ipynb_checkpoints/
+*.py[cod]
+data/raw/search_experiment.db
+analysis/search_experiment_analysis.html

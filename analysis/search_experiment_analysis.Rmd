@@ -1,0 +1,250 @@
+---
+title: "Search Feature Experiment and User Engagement Analysis"
+output:
+  github_document:
+    toc: true
+    df_print: kable
+---
+
+## Overview
+
+This analysis evaluates a synthetic 28-day randomized experiment comparing the existing search experience with an improved-results variant. The assignment unit is the user, so the primary statistical test is performed on user-level success rates rather than treating repeated search sessions as independent observations.
+
+```{r setup, message=FALSE, warning=FALSE}
+library(dplyr)
+library(ggplot2)
+library(knitr)
+
+project_root <- if (file.exists("requirements.txt")) "." else ".."
+
+read_project_csv <- function(file_name) {
+  file_path <- file.path(project_root, "data", "raw", file_name)
+
+  if (!file.exists(file_path)) {
+    stop(
+      paste0(
+        "Could not find ", file_path,
+        ". Open the repository as an RStudio project or knit from the analysis folder."
+      )
+    )
+  }
+
+  read.csv(
+    file_path,
+    row.names = NULL,
+    check.names = FALSE,
+    stringsAsFactors = FALSE
+  )
+}
+
+assignments <- read_project_csv("experiment_assignments.csv")
+sessions <- read_project_csv("search_sessions.csv")
+```
+
+## Experiment design
+
+- **Population:** 12,000 synthetic users with at least one search session
+- **Randomization unit:** User
+- **Control:** Existing search results
+- **Treatment:** Improved search results
+- **Primary metric:** Mean user search success rate, where a successful session includes a result click followed by at least two minutes of watch time
+- **Diagnostics:** Click-through rate, zero-result rate, and watch time after search
+- **Guardrail:** Search error rate
+
+Secondary and segment results are exploratory. The primary metric is evaluated with a two-sided Welch t-test at the user level.
+
+## Data checks
+
+```{r data-checks}
+data_checks <- data.frame(
+  check = c(
+    "Unique user assignments",
+    "Unique search sessions",
+    "Sessions with valid assigned user",
+    "Successful sessions with a click",
+    "Successful sessions with at least two watch minutes"
+  ),
+  passed = c(
+    !any(duplicated(assignments$user_id)),
+    !any(duplicated(sessions$session_id)),
+    all(sessions$user_id %in% assignments$user_id),
+    all(sessions$clicked_result[sessions$successful_search == 1] == 1),
+    all(sessions$watch_minutes_after_search[sessions$successful_search == 1] >= 2)
+  )
+)
+
+kable(data_checks)
+```
+
+## Assignment balance
+
+```{r assignment-balance}
+assignment_counts <- table(
+  factor(
+    assignments$variant,
+    levels = c("control", "improved_results")
+  )
+)
+
+assignment_summary <- data.frame(
+  variant = names(assignment_counts),
+  assigned_users = as.integer(assignment_counts),
+  assignment_share = as.integer(assignment_counts) / sum(assignment_counts)
+)
+
+kable(assignment_summary, digits = 3)
+
+srm_test <- chisq.test(assignment_counts, p = c(0.5, 0.5))
+srm_test
+```
+
+## User-level metrics
+
+```{r user-level-metrics}
+user_metrics <- sessions %>%
+  group_by(user_id) %>%
+  summarise(
+    search_sessions = n(),
+    success_rate = mean(successful_search),
+    click_through_rate = mean(clicked_result),
+    zero_result_rate = mean(zero_results),
+    error_rate = mean(search_error),
+    avg_watch_minutes = mean(watch_minutes_after_search),
+    .groups = "drop"
+  ) %>%
+  inner_join(assignments, by = "user_id")
+
+variant_summary <- user_metrics %>%
+  group_by(variant) %>%
+  summarise(
+    users = n(),
+    mean_user_success_rate = mean(success_rate),
+    mean_user_click_through_rate = mean(click_through_rate),
+    mean_user_zero_result_rate = mean(zero_result_rate),
+    mean_user_error_rate = mean(error_rate),
+    avg_watch_minutes = mean(avg_watch_minutes),
+    .groups = "drop"
+  )
+
+kable(variant_summary, digits = 4)
+```
+
+## Primary statistical test
+
+```{r primary-test}
+control_success <- user_metrics %>%
+  filter(variant == "control") %>%
+  pull(success_rate)
+
+treatment_success <- user_metrics %>%
+  filter(variant == "improved_results") %>%
+  pull(success_rate)
+
+primary_test <- t.test(
+  treatment_success,
+  control_success,
+  alternative = "two.sided",
+  var.equal = FALSE,
+  conf.level = 0.95
+)
+
+primary_result <- data.frame(
+  control_mean = mean(control_success),
+  treatment_mean = mean(treatment_success),
+  absolute_lift_percentage_points =
+    (mean(treatment_success) - mean(control_success)) * 100,
+  relative_lift_pct =
+    (mean(treatment_success) / mean(control_success) - 1) * 100,
+  ci_lower_percentage_points = primary_test$conf.int[1] * 100,
+  ci_upper_percentage_points = primary_test$conf.int[2] * 100,
+  p_value = primary_test$p.value
+)
+
+kable(primary_result, digits = 4)
+primary_test
+```
+
+## Guardrail test
+
+```{r guardrail-test}
+control_error <- user_metrics %>%
+  filter(variant == "control") %>%
+  pull(error_rate)
+
+treatment_error <- user_metrics %>%
+  filter(variant == "improved_results") %>%
+  pull(error_rate)
+
+guardrail_test <- t.test(
+  treatment_error,
+  control_error,
+  alternative = "two.sided",
+  var.equal = FALSE,
+  conf.level = 0.95
+)
+
+guardrail_result <- data.frame(
+  control_error_rate = mean(control_error),
+  treatment_error_rate = mean(treatment_error),
+  difference_percentage_points =
+    (mean(treatment_error) - mean(control_error)) * 100,
+  ci_lower_percentage_points = guardrail_test$conf.int[1] * 100,
+  ci_upper_percentage_points = guardrail_test$conf.int[2] * 100,
+  p_value = guardrail_test$p.value
+)
+
+kable(guardrail_result, digits = 4)
+```
+
+## Platform results
+
+```{r platform-results}
+platform_summary <- user_metrics %>%
+  group_by(platform, variant) %>%
+  summarise(
+    users = n(),
+    mean_user_success_rate = mean(success_rate),
+    mean_user_error_rate = mean(error_rate),
+    .groups = "drop"
+  )
+
+kable(platform_summary, digits = 4)
+```
+
+```{r primary-chart, fig.width=8, fig.height=5}
+ggplot(
+  variant_summary,
+  aes(
+    x = factor(
+      variant,
+      levels = c("control", "improved_results"),
+      labels = c("Control", "Improved results")
+    ),
+    y = mean_user_success_rate,
+    fill = variant
+  )
+) +
+  geom_col(width = 0.65, color = "#303134", show.legend = FALSE) +
+  geom_text(
+    aes(label = scales::percent(mean_user_success_rate, accuracy = 0.1)),
+    vjust = -0.5
+  ) +
+  scale_fill_manual(values = c("#5F6368", "#1A73E8")) +
+  scale_y_continuous(
+    labels = scales::percent_format(accuracy = 1),
+    limits = c(0, 0.60)
+  ) +
+  labs(
+    title = "Mean User Search Success Rate by Experiment Variant",
+    subtitle = "Synthetic 28-day randomized experiment; user is the analysis unit",
+    x = "Experiment variant",
+    y = "Mean user success rate"
+  ) +
+  theme_minimal()
+```
+
+## Interpretation
+
+The experiment should be evaluated using the pre-specified user-level primary metric, assignment-balance check, confidence interval, and search-error guardrail. Platform and query-category results can help identify follow-up questions, but they should not replace the overall randomized comparison or be treated as independently confirmed effects without adjustment for multiple testing.
+
+Because the dataset is synthetic, the result demonstrates an experiment-analysis workflow rather than the performance of a real search product.
