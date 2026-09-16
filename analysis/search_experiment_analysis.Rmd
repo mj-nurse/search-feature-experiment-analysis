@@ -1,5 +1,6 @@
 ---
 title: "Search Feature Experiment and User Engagement Analysis"
+author: "Marlon Nurse"
 output:
   github_document:
     toc: true
@@ -37,8 +38,8 @@ read_project_csv <- function(file_name) {
   )
 }
 
-assignments <- read_project_csv("experiment_assignments.csv")
-sessions <- read_project_csv("search_sessions.csv")
+assignments <- read.csv("https://raw.githubusercontent.com/mj-nurse/search-feature-experiment-analysis/refs/heads/main/data/raw/experiment_assignments.csv")
+sessions <- read.csv("https://raw.githubusercontent.com/mj-nurse/search-feature-experiment-analysis/refs/heads/main/data/raw/search_sessions.csv")
 ```
 
 ## Experiment design
